@@ -1,0 +1,119 @@
+name: 🌈 All Builds
+on:
+  push:
+    branches: [ upgrade-build-system ]
+    tags:
+      - "v*"
+
+# Global Settings
+env:
+  PROJECT_FOLDER: .
+  TARGET_PATH: demo/addons/godot-sqlite/bin/
+  TARGET_NAME: libgdsqlite
+  TARGET: release
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows Compilation
+            os: "windows-latest"
+            platform: windows
+            artifact-name: win64
+            artifact-folder: win64/
+            artifact-extension: dll
+            additional-python-packages: pywin32
+
+          - name: Windows Cross Compilation
+            os: "ubuntu-20.04"
+            platform: windows
+            artifact-name: win64-cross
+            artifact-folder: win64/
+            artifact-extension: dll
+
+          - name: Ubuntu 20.04 Compilation
+            os: "ubuntu-20.04"
+            platform: linux
+            artifact-name: x11
+            artifact-folder: x11/
+            artifact-extension: so
+
+          - name: Ubuntu 18.04 Compilation
+            os: "ubuntu-18.04"
+            platform: linux
+            artifact-name: x11-legacy
+            artifact-folder: x11/
+            artifact-extension: so
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          lfs: true
+          submodules: recursive
+
+      # Install all packages (except scons)
+      - name: Configure dependencies
+        if: runner.os == 'Linux' && matrix.platform == 'windows'
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential pkg-config libx11-dev libxcursor-dev \
+            libxinerama-dev libgl1-mesa-dev libglu-dev libasound2-dev libpulse-dev \
+            libudev-dev libxi-dev libxrandr-dev yasm mingw-w64
+
+      # Use python 3.x release (works cross platform; best to keep self contained in it's own step)
+      - name: Set up Python 3.x
+        uses: actions/setup-python@v4
+        with:
+          # Semantic version range syntax or exact version of a Python version
+          python-version: '3.x'
+          # Optional - x64 or x86 architecture, defaults to x64
+          architecture: 'x64'
+
+      # Setup scons, print python version and scons version info, so if anything is broken it won't run the build.
+      - name: Configuring Python packages
+        run: |
+          python -c "import sys; print(sys.version)"
+          python -m pip install scons ${{ matrix.additional-python-packages }}
+          python --version
+          scons --version
+
+      - name: Windows Compilation
+        if: runner.os == 'Windows'
+        env:
+          ARTIFACT_FOLDER: ${{ env.PROJECT_FOLDER }}\${{ env.TARGET_PATH }}\${{ matrix.artifact-folder }}
+        run: |
+          if(-Not (Test-Path -Path ${{ env.ARTIFACT_FOLDER }}))
+          {
+            mkdir ${{ env.ARTIFACT_FOLDER }}
+          }
+          cd ${{env.PROJECT_FOLDER}}
+          cd godot-cpp
+          scons platform=windows bits=64 target=${{ env.TARGET }} generate_bindings=yes -j4
+          cd ..
+          scons platform=windows target=${{ env.TARGET }} target_path=${{ env.ARTIFACT_FOLDER }} target_name=${{ env.TARGET_NAME }} -j6 ${{ matrix.flags }}
+
+      - name: Not Windows Compilation
+        if: runner.os != 'Windows'
+        env:
+          ARTIFACT_FOLDER: ${{ env.PROJECT_FOLDER }}/${{ env.TARGET_PATH }}/${{ matrix.artifact-folder }}
+        run: |
+          mkdir -v -p ${{ env.ARTIFACT_FOLDER }}
+          cd ${{ env.PROJECT_FOLDER }}
+          cd godot-cpp
+          scons platform=${{ matrix.platform }} bits=64 target=${{ env.TARGET }} generate_bindings=yes -j4
+          cd ..
+          scons platform=${{ matrix.platform }} target=${{ env.TARGET }} target_path=${{ env.ARTIFACT_FOLDER }} target_name=${{ env.TARGET_NAME }} -j6 ${{ matrix.flags }}
+
+      - name: Upload Artifact
+        env:
+          ARTIFACT_FOLDER: ${{ env.PROJECT_FOLDER }}/${{ env.TARGET_PATH }}/${{ matrix.artifact-folder }}
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ env.ARTIFACT_FOLDER }}*.${{ matrix.artifact-extension }}
+          if-no-files-found: error
